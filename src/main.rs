@@ -15,6 +15,9 @@ struct Cli {
 
     #[arg(long, default_value_t = 10)]
     concurrency: usize,
+
+    #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u64).range(1..=60))]
+    timeout: u64,
 }
 
 #[tokio::main]
@@ -34,8 +37,9 @@ async fn main() {
     let results = stream::iter(ports)
         .map(|port| {
             let host = cli.host.clone();
+            let to = cli.timeout;
             async move {
-                let open = scan_port(&host, port).await;
+                let open = scan_port(&host, port, to).await;
                 (port, open)
             }
         })

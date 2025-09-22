@@ -28,9 +28,10 @@ pub fn parse_ports(spec: &str) -> Result<Vec<u16>, String> {
     Ok(set.into_iter().collect())
 }
 
-pub async fn scan_port(host: &str, port: u16) -> bool {
+pub async fn scan_port(host: &str, port: u16, timeout_secs: u64) -> bool {
     let addr = format!("{}:{}", host, port);
-    match timeout(Duration::from_secs(2), TcpStream::connect(addr)).await {
+    let dur = Duration::from_secs(timeout_secs);
+    match timeout(dur, TcpStream::connect(addr)).await {
         Ok(Ok(_stream)) => true,
         _ => false,
     }
