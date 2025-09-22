@@ -1,0 +1,17 @@
+[package]
+name = "web_scanner"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.11", features = ["json", "gzip", "stream", "blocking", "rustls-tls"] }
+scraper = "0.24.0"
+url = "2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+csv = "1.1"
+futures = "0.3"
+robots_txt = "0.7.0"   # optional
+anyhow = "1.0"       # error handling
+clap = { version = "4.5.48", features = ["derive"] }
