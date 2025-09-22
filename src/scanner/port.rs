@@ -16,7 +16,7 @@ pub fn parse_ports(spec: &str) -> Result<Vec<u16>, String> {
             }
             for p in start..=end {
                 set.insert(p as u16);
-            }
+            } 
         } else {
             let p: u32 = part.parse().map_err(|_| format!("invalid number: {}", part))?;
             if p == 0 || p > 65535 {
