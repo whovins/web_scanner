@@ -1,0 +1,42 @@
+[
+  {
+    "host": "scanme.nmap.org",
+    "port": 20,
+    "open": false
+  },
+  {
+    "host": "scanme.nmap.org",
+    "port": 21,
+    "open": false
+  },
+  {
+    "host": "scanme.nmap.org",
+    "port": 22,
+    "open": true
+  },
+  {
+    "host": "scanme.nmap.org",
+    "port": 23,
+    "open": false
+  },
+  {
+    "host": "scanme.nmap.org",
+    "port": 24,
+    "open": false
+  },
+  {
+    "host": "scanme.nmap.org",
+    "port": 25,
+    "open": false
+  },
+  {
+    "host": "scanme.nmap.org",
+    "port": 80,
+    "open": true
+  },
+  {
+    "host": "scanme.nmap.org",
+    "port": 443,
+    "open": false
+  }
+]
