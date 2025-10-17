@@ -3,3 +3,6 @@ pub mod http;
 pub mod crawler;
 pub mod xss;
 pub mod services;
+pub mod vuln_db;
+pub mod targets;     
+pub mod rate;

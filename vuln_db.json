@@ -1,0 +1,16 @@
+[
+  {
+    "pattern": "(?i)juice shop",
+    "field": "title",
+    "level": "info",
+    "message": "OWASP Juice Shop test app",
+    "confidence": 0.6
+  },
+  {
+    "pattern": "(?i)apache/2\\.4\\.7",
+    "field": "service",
+    "level": "warning",
+    "message": "Apache 2.4.7 detected",
+    "confidence": 0.8
+  }
+]
