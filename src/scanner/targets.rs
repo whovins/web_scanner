@@ -115,9 +115,9 @@ pub async fn resolve_all(
     let mut rng = match seed {
         Some(s) => ChaCha8Rng::seed_from_u64(s),
         None => {
-        let s: u64 = rand::random();
-        ChaCha8Rng::seed_from_u64(s)
-    }
+            let s: u64 = rand::random();
+            ChaCha8Rng::seed_from_u64(s)
+        }
     };
     ips.shuffle(&mut rng);
     Ok(ips)

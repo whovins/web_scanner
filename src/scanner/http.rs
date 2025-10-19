@@ -1,9 +1,10 @@
 // src/scanner/http.rs
 use anyhow::Result;
 use regex::Regex;
-use reqwest::{Client, StatusCode};
+use reqwest::Client;
 use std::time::Duration;
 use serde::{Serialize, Deserialize};
+use std::collections::HashSet;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PathCheck {
@@ -28,6 +29,7 @@ pub struct HttpInfo {
     pub title: Option<String>,   // <title> if found
     pub robots: Option<RobotsInfo>,
     pub warnings: Vec<Warning>,  // structured warnings
+    pub security: Option<SecurityHeaders>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -37,6 +39,26 @@ pub struct RobotsInfo {
     pub body_snippet: Option<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct SecurityHeaders {
+    pub hsts: Option<String>,              // Strict-Transport-Security
+    pub csp: Option<String>,               // Content-Security-Policy
+    pub x_frame_options: Option<String>,   // X-Frame-Options
+    pub x_content_type_options: Option<String>, // X-Content-Type-Options
+    pub referrer_policy: Option<String>,   // Referrer-Policy
+    pub permissions_policy: Option<String>,// Permissions-Policy
+    pub server: Option<String>,            // Server
+    pub x_powered_by: Option<String>,      // X-Powered-By
+}
+
+const SNIP_PATH: usize = 200;
+const SNIP_ROBOTS: usize = 512;
+
+fn push_unique(warns: &mut Vec<Warning>, seen: &mut HashSet<String>, level: &str, msg: &str, conf: f32) {
+    if seen.insert(format!("{}|{}", level, msg)) {
+        warns.push(Warning { level: level.into(), message: msg.into(), confidence: conf });
+    }
+}
 fn analyze_snippet(snippet: &str) -> Vec<String> {
     let s = snippet.to_lowercase();
     let mut hints = Vec::new();
@@ -49,9 +71,9 @@ fn analyze_snippet(snippet: &str) -> Vec<String> {
     if s.contains("index of /") || s.contains("<title>index of") {
         hints.push("directory_listing".to_string());
     }
-    if s.contains(".git") || s.contains("git/") || s.contains("ref: refs/heads") {
-        hints.push("git_exposed".to_string());
-    }
+    // if s.contains(".git") || s.contains("git/") || s.contains("ref: refs/heads") {
+    //     hints.push("git_exposed".to_string());
+    // }
     if s.contains("wp-login.php") || s.contains("wordpress") {
         hints.push("wp_login".to_string());
     }
@@ -69,7 +91,7 @@ fn add_warning(warnings: &mut Vec<Warning>, level: &str, msg: impl Into<String>,
     });
 }
 
-fn parse_set_cookie_flags(set_cookie_vals: &Vec<String>, warnings: &mut Vec<Warning>) {
+fn parse_set_cookie_flags(set_cookie_vals: &[String], warnings: &mut Vec<Warning>) {
     for raw in set_cookie_vals.iter() {
         // cookie 형식의 앞부분에서 이름=값 추출
         let parts: Vec<&str> = raw.split(';').map(|s| s.trim()).collect();
@@ -109,7 +131,7 @@ pub async fn probe_paths(host: &str, port: u16, timeout_secs: u64, paths: &[Stri
         Ok(r) => {
             if let Ok(b) = r.text().await {
                 let s = b.trim();
-                if s.is_empty() { None } else { Some(s.chars().take(200).collect()) }
+                if s.is_empty() { None } else { Some(s.chars().take(SNIP_PATH).collect()) }
             } else { None }
         }
         Err(_) => None,
@@ -122,12 +144,13 @@ pub async fn probe_paths(host: &str, port: u16, timeout_secs: u64, paths: &[Stri
         match client.get(&url).send().await {
             Ok(resp) => {
                 let status = resp.status();
-                let exists = status.is_success();
+                let mut exists = status.is_success() || status.is_redirection();
+                let mut status_u16 = status.as_u16();
                 let mut snippet: Option<String> = None;
                 if let Ok(body) = resp.text().await {
                     let s = body.trim();
                     if !s.is_empty() {
-                        let snippet_trimmed: String = s.chars().take(200).collect();
+                        let snippet_trimmed: String = s.chars().take(SNIP_PATH).collect();
                         snippet = Some(snippet_trimmed);
                     }
                 }
@@ -135,26 +158,22 @@ pub async fn probe_paths(host: &str, port: u16, timeout_secs: u64, paths: &[Stri
                 let mut hints = Vec::new();
                 if let Some(ref sn) = snippet {
                     if let Some(ref base_s) = base_snip {
-                        if sn == base_s {
-                            hints.push("catchall".to_string());
-                        }
+                        if sn == base_s { hints.push("catchall".to_string()); }
                     }
-                    let s = sn.to_lowercase();
-                    if s.contains("<form") { hints.push("login_form".to_string()); }
-                    if s.contains("type=\"password\"") { hints.push("password_field".to_string()); }
-                    if s.contains("index of /") || s.contains("<title>index of") { hints.push("directory_listing".to_string()); }
-                    if s.contains("wp-login.php") || s.contains("wordpress") { hints.push("wp_login".to_string()); }
-                    if s.contains("admin") && (s.contains("/admin") || s.contains("administrator")) { hints.push("admin_page".to_string()); }
+                    hints.extend(analyze_snippet(sn));
                 }
 
-                if rel == "/.git" || rel == "/.git/" {
+
+               if rel == "/.git" || rel == "/.git/" {
                     if let Ok(r2) = client.get(format!("{}{}", base, "/.git/HEAD")).send().await {
                         if r2.status().is_success() {
                             if let Ok(b2) = r2.text().await {
                                 let low = b2.to_lowercase();
                                 let is_html = low.contains("<!doctype") || low.contains("<html") || low.contains("<head");
                                 if !is_html && (low.contains("ref:") || low.contains("refs/")) {
-                                    hints.push("git_exposed".to_string());
+                                    hints.push("git_exposed_verified".to_string());
+                                    exists = true;
+                                    status_u16 = 200;
                                 }
                             }
                         }
@@ -180,8 +199,8 @@ pub async fn probe_paths(host: &str, port: u16, timeout_secs: u64, paths: &[Stri
 
                 out.push(PathCheck {
                     path: rel,
-                    status: status.as_u16(),
-                    exists,
+                    status: status_u16,   
+                    exists,             
                     snippet,
                     hints,
                 });
@@ -204,6 +223,7 @@ pub async fn probe_paths(host: &str, port: u16, timeout_secs: u64, paths: &[Stri
 
 
 pub async fn probe_http(host: &str, port: u16, timeout_secs: u64) -> Result<HttpInfo> {
+    let mut seen = HashSet::new();
     let scheme = if port == 443 { "https" } else { "http" };
     let base = format!("{scheme}://{host}:{port}");
 
@@ -212,55 +232,62 @@ pub async fn probe_http(host: &str, port: u16, timeout_secs: u64) -> Result<Http
         .user_agent("web_scanner/0.1")
         .redirect(reqwest::redirect::Policy::limited(5))
         .build()?;
+    
 
     let mut service_header: Option<String> = None;
     let mut title: Option<String> = None;
     let mut robots: Option<RobotsInfo> = None;
     let mut warnings: Vec<Warning> = Vec::new();
     let mut origin_header: Option<String> = None;
+    let mut security_opt: Option<SecurityHeaders> = None;
+
+
 
     // main path probe (grab headers + body)
     if let Ok(resp) = client.get(&base).send().await {
+        // 헤더/URL은 body 읽기 전에 복제해서 보관
+        let headers = resp.headers().clone();
+        let final_url = resp.url().clone();
+
         // server header
-        if let Some(h) = resp.headers().get(reqwest::header::SERVER) {
+        if let Some(h) = headers.get(reqwest::header::SERVER) {
             if let Ok(s) = h.to_str() {
                 service_header = Some(s.to_string());
                 // server header에 버전 노출이 있으면 info
-                if s.contains('/') || s.chars().any(|c| c.is_digit(10)) {
+                if s.contains('/') || s.chars().any(|c| c.is_ascii_digit()) {
                     add_warning(&mut warnings, "info", format!("Server header exposes detail: {}", s), 0.3);
                 }
             }
         }
 
         // X-Powered-By
-        if let Some(h) = resp.headers().get("x-powered-by") {
+        if let Some(h) = headers.get("x-powered-by") {
             if let Ok(s) = h.to_str() {
                 add_warning(&mut warnings, "info", format!("X-Powered-By header present: {}", s), 0.3);
             }
         }
 
         // security-related headers
-        let has_hsts = resp.headers().get("strict-transport-security").is_some();
-        let has_xfo = resp.headers().get("x-frame-options").is_some();
-        let has_xcto = resp.headers().get("x-content-type-options").is_some();
-        let has_csp = resp.headers().get("content-security-policy").is_some();
+        let has_hsts = headers.get("strict-transport-security").is_some();
+        let has_xfo  = headers.get("x-frame-options").is_some();
+        let has_xcto = headers.get("x-content-type-options").is_some();
+        let has_csp  = headers.get("content-security-policy").is_some();
 
-        if port == 443 && !has_hsts {
-            add_warning(&mut warnings, "warning", "Missing Strict-Transport-Security (HSTS) on HTTPS", 0.8);
+       if port == 443 && !has_hsts {
+            push_unique(&mut warnings, &mut seen, "warning", "Missing Strict-Transport-Security (HSTS) on HTTPS", 0.8);
         }
         if !has_xfo {
-            add_warning(&mut warnings, "warning", "Missing X-Frame-Options header (clickjacking protection)", 0.6);
+            push_unique(&mut warnings, &mut seen, "warning", "Missing X-Frame-Options header (clickjacking protection)", 0.6);
         }
         if !has_xcto {
-            add_warning(&mut warnings, "warning", "Missing X-Content-Type-Options header (nosniff)", 0.6);
+            push_unique(&mut warnings, &mut seen, "warning", "Missing X-Content-Type-Options header (nosniff)", 0.6);
         }
         if !has_csp {
-            add_warning(&mut warnings, "info", "Missing Content-Security-Policy header", 0.4);
+            push_unique(&mut warnings, &mut seen, "info", "Missing Content-Security-Policy header", 0.4);
         }
-
         // Set-Cookie flags 검사 (여러 개 가능)
         let mut set_cookie_vals: Vec<String> = Vec::new();
-        for val in resp.headers().get_all(reqwest::header::SET_COOKIE).iter() {
+        for val in headers.get_all(reqwest::header::SET_COOKIE).iter() {
             if let Ok(s) = val.to_str() {
                 set_cookie_vals.push(s.to_string());
             }
@@ -268,10 +295,11 @@ pub async fn probe_http(host: &str, port: u16, timeout_secs: u64) -> Result<Http
         if !set_cookie_vals.is_empty() {
             parse_set_cookie_flags(&set_cookie_vals, &mut warnings);
         }
-        if let Some(h) = resp.headers().get("access-control-allow-origin") {
+
+        // CORS
+        if let Some(h) = headers.get("access-control-allow-origin") {
             if let Ok(s) = h.to_str() {
                 origin_header = Some(s.to_string());
-                // wildcard
                 if s.trim() == "*" {
                     add_warning(&mut warnings, "warning", "CORS Access-Control-Allow-Origin is '*'", 0.7);
                 } else {
@@ -279,14 +307,16 @@ pub async fn probe_http(host: &str, port: u16, timeout_secs: u64) -> Result<Http
                 }
             }
         }
-
-        // credentials header check (dangerous when combined with wildcard)
-        if let Some(hc) = resp.headers().get("access-control-allow-credentials") {
+        if let Some(hc) = headers.get("access-control-allow-credentials") {
             if let Ok(s) = hc.to_str() {
                 if s.eq_ignore_ascii_case("true") {
-                    // if credentials=true + origin=* -> very bad
                     if origin_header.as_deref() == Some("*") {
-                        add_warning(&mut warnings, "critical", "CORS wildcard '*' combined with Access-Control-Allow-Credentials: true — sensitive!", 0.95);
+                        add_warning(
+                            &mut warnings,
+                            "critical",
+                            "CORS wildcard '*' combined with Access-Control-Allow-Credentials: true — sensitive!",
+                            0.95,
+                        );
                     } else {
                         add_warning(&mut warnings, "warning", "Access-Control-Allow-Credentials is true", 0.7);
                     }
@@ -294,7 +324,7 @@ pub async fn probe_http(host: &str, port: u16, timeout_secs: u64) -> Result<Http
             }
         }
 
-        // try to read body (may fail)
+        // body에서 <title> 추출
         if let Ok(body) = resp.text().await {
             if title.is_none() {
                 if let Ok(re) = Regex::new("(?is)<title[^>]*>(.*?)</title>") {
@@ -306,6 +336,44 @@ pub async fn probe_http(host: &str, port: u16, timeout_secs: u64) -> Result<Http
                 }
             }
         }
+
+        // 보안 헤더 구조 채우기
+        let sec = SecurityHeaders {
+            hsts: headers.get("strict-transport-security").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
+            csp: headers.get("content-security-policy").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
+            x_frame_options: headers.get("x-frame-options").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
+            x_content_type_options: headers.get("x-content-type-options").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
+            referrer_policy: headers.get("referrer-policy").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
+            permissions_policy: headers.get("permissions-policy").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
+            server: headers.get("server").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
+            x_powered_by: headers.get("x-powered-by").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
+        };
+
+        
+        
+        
+
+        // 간단 규칙 (Warning::… 대신 add_warning 사용)
+       let is_https = final_url.scheme() == "https" || scheme == "https";
+        // if is_https && sec.hsts.is_none() {
+        //     push_unique(&mut warnings, &mut seen, "warning", "HSTS not set on HTTPS origin", 0.7);
+        // }
+        // if sec.csp.is_none() {
+        //     push_unique(&mut warnings, &mut seen, "info", "CSP not set", 0.4);
+        // }
+        // if sec.x_frame_options.is_none() {
+        //     push_unique(&mut warnings, &mut seen, "warning", "X-Frame-Options missing (clickjacking risk)", 0.7);
+        // }
+        // if sec.x_content_type_options.as_deref() != Some("nosniff") {
+        //     push_unique(&mut warnings, &mut seen, "info", "X-Content-Type-Options not 'nosniff'", 0.5);
+        // }
+       if let Some(loc) = headers.get("location").and_then(|v| v.to_str().ok()) {
+            if is_https && loc.starts_with("http://") {
+                push_unique(&mut warnings, &mut seen, "critical", "HTTPS to HTTP downgrade redirect", 0.9);
+            }
+        }
+
+        security_opt = Some(sec);
     }
 
     // robots.txt probe (quick)
@@ -318,7 +386,7 @@ pub async fn probe_http(host: &str, port: u16, timeout_secs: u64) -> Result<Http
             if exists {
                 if let Ok(body) = r.text().await {
                     let s = body.trim();
-                    snippet = Some(s.chars().take(512).collect());
+                    snippet = Some(s.chars().take(SNIP_ROBOTS).collect());
                 }
             }
             robots = Some(RobotsInfo {
@@ -330,16 +398,21 @@ pub async fn probe_http(host: &str, port: u16, timeout_secs: u64) -> Result<Http
         Err(_) => {
             robots = Some(RobotsInfo {
                 exists: false,
-                status: 0,
+        status: 0,
                 body_snippet: None,
             });
         }
     }
-
+    warnings.sort_by(|a,b| a.level.cmp(&b.level).then(a.message.cmp(&b.message)));
+    warnings.dedup_by(|a,b| a.level == b.level && a.message == b.message);
     Ok(HttpInfo {
         service: service_header,
         title,
         robots,
         warnings,
+        security: security_opt, // ← 누락되면 컴파일 에러
     })
+  
+
 }
+

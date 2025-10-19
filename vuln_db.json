@@ -12,5 +12,15 @@
     "level": "warning",
     "message": "Apache 2.4.7 detected",
     "confidence": 0.8
+  },
+  {
+    "pattern": "regex",
+    "field": "service|title|header",
+    "level": "info|warning|critical",
+    "message": "text",
+    "confidence": 0.0,
+    "tags": []
   }
 ]
+
+

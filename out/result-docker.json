@@ -1,0 +1,108 @@
+{
+  "summary": {
+    "host": "127.0.0.1",
+    "total_ports_scanned": 10,
+    "open_ports": 6,
+    "warnings_info": 0,
+    "warnings_warning": 0,
+    "warnings_critical": 0,
+    "total_paths_checked": 0,
+    "paths_found": 0,
+    "paths_suspected": 0
+  },
+  "records": [
+    {
+      "host": "127.0.0.1",
+      "port": 2121,
+      "open": true,
+      "service": "smtp",
+      "title": null,
+      "warnings": [],
+      "paths": [],
+      "banner": "220 (vsFTPd 3.0.2)",
+      "banner_sha1": "f553a67424d62e026013430b52aab2d5067d96b5",
+      "tls": null,
+      "proto_hits": []
+    },
+    {
+      "host": "127.0.0.1",
+      "port": 2222,
+      "open": true,
+      "service": "ssh",
+      "title": null,
+      "warnings": [],
+      "paths": [],
+      "banner": "SSH-2.0-OpenSSH_10.0",
+      "banner_sha1": "eb948778efa6db49266b390c7124252b737d45b8",
+      "tls": null,
+      "proto_hits": []
+    },
+    {
+      "host": "127.0.0.1",
+      "port": 3306,
+      "open": true,
+      "service": "mysql",
+      "title": null,
+      "warnings": [],
+      "paths": [],
+      "banner": "J\u0000\u0000\u0000\n8.0.43\u0000\u0012\u0000\u0000\u0000=\u0007\u00103;%:\t\u0000���\u0002\u0000��\u0015\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000*%\u00109\nSh!\u000f&\u0017\u0000caching_sha2_password\u0000",
+      "banner_sha1": "7b07502a5b82ef5aff749fee1ea688f56cfdcaff",
+      "tls": null,
+      "proto_hits": [
+        {
+          "name": "mysql",
+          "note": "8.0.43"
+        }
+      ]
+    },
+    {
+      "host": "127.0.0.1",
+      "port": 5432,
+      "open": true,
+      "service": "postgres",
+      "title": null,
+      "warnings": [],
+      "paths": [],
+      "banner": null,
+      "banner_sha1": null,
+      "tls": null,
+      "proto_hits": [
+        {
+          "name": "postgres",
+          "note": "ssl_not_supported"
+        }
+      ]
+    },
+    {
+      "host": "127.0.0.1",
+      "port": 6379,
+      "open": true,
+      "service": "redis",
+      "title": null,
+      "warnings": [],
+      "paths": [],
+      "banner": null,
+      "banner_sha1": null,
+      "tls": null,
+      "proto_hits": [
+        {
+          "name": "redis",
+          "note": null
+        }
+      ]
+    },
+    {
+      "host": "127.0.0.1",
+      "port": 11211,
+      "open": true,
+      "service": null,
+      "title": null,
+      "warnings": [],
+      "paths": [],
+      "banner": "ERROR",
+      "banner_sha1": "0b99cebe565822c64ac5d84aecb00fe40e59cbd3",
+      "tls": null,
+      "proto_hits": []
+    }
+  ]
+}

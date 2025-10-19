@@ -9,8 +9,12 @@ mod scanner;
 use scanner::port::{parse_ports, scan_port};
 use scanner::services;
 use scanner::vuln_db;
+mod banner;
 use futures::StreamExt;
 use clap::{Parser, ArgGroup};
+
+
+
 //
 // ───────────────────────────────── CLI ────────────────────────────────────────
 //
@@ -109,6 +113,8 @@ struct Cli {
     /// 커스텀 DNS 서버(콤마로 구분된 IP 목록)
     #[arg(long)]
     dns_servers: Option<String>,
+    #[arg(long, help = "Only Open port number to save")]
+    only_open: bool,
 }
 
 //
@@ -123,6 +129,10 @@ struct ScanRecord {
     title: Option<String>,
     warnings: Vec<scanner::http::Warning>,
     paths: Vec<scanner::http::PathCheck>,
+    banner: Option<String>,        // 앞부분(최대 160자 정도만 저장)
+    banner_sha1: Option<String>,
+    tls: Option<scanner::tls::TlsInfo>,
+    proto_hits: Vec<scanner::proto::ProtoHit>,
 }
 
 /// 단일 호스트 요약
@@ -148,6 +158,8 @@ struct FullReport {
 //
 // ─────────────────────────────── 저장 유틸 ───────────────────────────────────
 //
+
+
 fn save_csv(path: &str, records: &[ScanRecord]) -> anyhow::Result<()> {
     let mut wtr = csv::Writer::from_path(path)?;
     wtr.write_record(&[
@@ -158,19 +170,20 @@ fn save_csv(path: &str, records: &[ScanRecord]) -> anyhow::Result<()> {
         "title",
         "warnings",
         "paths",
+        "banner",
+        "banner_sha1"
     ])?;
     for r in records {
         let warnings_json =
             serde_json::to_string(&r.warnings).unwrap_or_else(|_| "[]".to_string());
         let paths_json = serde_json::to_string(&r.paths).unwrap_or_else(|_| "[]".to_string());
         wtr.serialize((
-            &r.host,
-            r.port,
-            r.open,
+            &r.host, r.port, r.open,
             r.service.as_deref().unwrap_or(""),
             r.title.as_deref().unwrap_or(""),
-            &warnings_json,
-            &paths_json,
+            &warnings_json, &paths_json,
+            r.banner.as_deref().unwrap_or(""),
+            r.banner_sha1.as_deref().unwrap_or(""),
         ))?;
     }
     wtr.flush()?;
@@ -227,6 +240,8 @@ async fn main() {
 
     // 1) CLI 파싱
     let cli = Cli::parse();
+    #[cfg(not(test))]
+    banner::print_banner();
 
     // 2) DNS 리졸버 구성
     let mut opts = ResolverOpts::default();
@@ -362,9 +377,104 @@ async fn main() {
             let mut warnings_out: Vec<scanner::http::Warning> = Vec::new();
             let mut paths_out: Vec<scanner::http::PathCheck> = Vec::new();
 
+            let mut banner_opt: Option<String> = None;
+            let mut banner_sha1_opt: Option<String> = None;
+            fn truncate(s: &str, max: usize) -> String {
+                if s.len() <= max { s.to_string() } else { s.chars().take(max).collect() }
+            }
+            if *open && !http_ports_vec.contains(port) {
+                if let Ok(Some(bi)) = scanner::banner::grab_banner(&host_ip, *port, cli.timeout).await {
+                    banner_opt = Some(truncate(&bi.banner, 160));
+                    banner_sha1_opt = Some(bi.banner_sha1);
+                    // 배너에서 추론된 서비스가 있으면 힌트 보강
+                    if service_hint.is_none() {
+                        service_hint = bi.service_guess;
+                    }
+                }
+            }
+
+            let mut proto_hits: Vec<scanner::proto::ProtoHit> = Vec::new();
+
+            if *open {
+                match *port {
+                    6379 => if let Ok(Some(h)) = scanner::proto::probe_redis(&host_ip, *port, cli.timeout).await { proto_hits.push(h); },
+                    3306 => if let Ok(Some(h)) = scanner::proto::probe_mysql(&host_ip, *port, cli.timeout).await { proto_hits.push(h); },
+                    5432 => if let Ok(Some(h)) = scanner::proto::probe_postgres(&host_ip, *port, cli.timeout).await { proto_hits.push(h); },
+                    3389 => if let Ok(Some(h)) = scanner::proto::probe_rdp(&host_ip, *port, cli.timeout).await { proto_hits.push(h); },
+                    445  => if let Ok(Some(h)) = scanner::proto::probe_smb(&host_ip, *port, cli.timeout).await { proto_hits.push(h); },
+                    _ => {}
+                }
+            }
+
+            let mut tls_info_opt: Option<scanner::tls::TlsInfo> = None;
+
+            if *open && http_ports_vec.contains(port) {
+                // SNI 호스트 결정: 원본이 도메인이면 그걸 쓰고, 아니면 IP 사용
+                let sni_host = match tgt.display.parse::<std::net::IpAddr>() {
+                    Ok(_) => host_ip.as_str(),
+                    Err(_) => tgt.display.as_str(),
+                };
+            if *open && matches!(*port, 443 | 8443 | 9443 | 10443) {
+                    if let Ok(Some(ti)) = scanner::tls::probe_tls(sni_host, &host_ip, *port, cli.timeout).await {
+                        // 가벼운 경고 예시(알려지지 않은 ALPN)
+                        if let Some(alpn) = &ti.alpn {
+                            if alpn != "h2" && alpn != "http/1.1" {
+                                warnings_out.push(scanner::http::Warning { level: "info".into(), message: format!("Unknown ALPN: {}", alpn), confidence: 0.4 });
+                            }
+                        }
+                        tls_info_opt = Some(ti);
+                    }
+                }
+            }
+
+            // SSH: 22/tcp 열려있으면 배너 파싱
+            if *open && *port == 22 {
+                if let Ok(Some(ssh)) = scanner::proto::ssh::probe_ssh(&host_ip, *port, cli.timeout).await {
+                    if service_hint.is_none() {
+                        service_hint = Some("ssh".into());
+                    }
+                    // 배너를 record.banner에도 남길 수 있음
+                    banner_opt.get_or_insert(ssh.raw.clone());
+
+                    // 약식 취약 룰(예시)
+                    if let (Some(prod), Some(ver)) = (&ssh.product, &ssh.version) {
+                        if prod.eq_ignore_ascii_case("openssh") {
+                            // 아주 단순한 구버전 감지 예시
+                            let is_old = ver.starts_with('6') || ver.starts_with("7.0")
+                                || ver.starts_with("7.1") || ver.starts_with("7.2") || ver.starts_with("7.3");
+                            if is_old {
+                                warnings_out.push(scanner::http::Warning{
+                                    level: "warning".into(),
+                                    message: format!("OpenSSH {} is old — review upgrade notes", ver),
+                                    confidence: 0.6,
+                                });
+                            }
+                        }
+                    }
+
+                    // note: Option<String> 맞추기
+                    let note_string = format!(
+                        "{} {}",
+                        ssh.product.clone().unwrap_or_default(),
+                        ssh.version.clone().unwrap_or_default()
+                    )
+                    .trim()
+                    .to_string();
+                    let note_opt = if note_string.is_empty() { None } else { Some(note_string) };
+
+                    proto_hits.push(scanner::proto::ProtoHit {
+                        name: "ssh".into(),
+                        note: note_opt, // <- Option<String>
+                    });
+                }
+            }
+
+            
+
             // HTTP 패시브 점검
             if cli.http_probe && *open && http_ports_vec.contains(port) {
                 match scanner::http::probe_http(&host_ip, *port, cli.timeout).await {
+                    
                     Ok(info) => {
                         if !info.warnings.is_empty() {
                             println!("    warnings ({}):", info.warnings.len());
@@ -375,6 +485,7 @@ async fn main() {
                                 );
                             }
                         }
+                        
                         if let Some(robots) = &info.robots {
                             if robots.exists {
                                 println!(
@@ -396,16 +507,18 @@ async fn main() {
                         let title_clone = info.title.clone();
 
                         let mut mapped: Vec<scanner::http::Warning> = Vec::new();
-                        mapped.extend(vuln_db::match_vulns(
-                            service_clone.as_deref(),
-                            &vuln_rules,
-                            "service",
-                        ));
-                        mapped.extend(vuln_db::match_vulns(
-                            title_clone.as_deref(),
-                            &vuln_rules,
-                            "title",
-                        ));
+                        mapped.extend(vuln_db::match_vulns(service_clone.as_deref(), &vuln_rules, "service"));
+
+                        mapped.extend(vuln_db::match_vulns(title_clone.as_deref(), &vuln_rules, "title"));
+
+                         if let Some(sec) = &info.security {
+                            let header_blob = [
+                                sec.server.as_deref().unwrap_or(""),
+                                sec.x_powered_by.as_deref().unwrap_or(""),
+                                sec.csp.as_deref().unwrap_or(""),
+                            ].join(" | ");
+                            mapped.extend(vuln_db::match_vulns(Some(&header_blob), &vuln_rules, "header"));
+                        }
 
                         if !mapped.is_empty() {
                             println!("    vuln db matches ({}):", mapped.len());
@@ -416,6 +529,7 @@ async fn main() {
                                 );
                             }
                         }
+                       
 
                         if let Some(s) = service_clone {
                             service_hint = Some(s);
@@ -461,20 +575,20 @@ async fn main() {
                                         pc.hints.iter().any(|h| h == "catchall");
                                     for hint in &pc.hints {
                                         match hint.as_str() {
+                                            "git_exposed_verified" => {
+                                                warnings_out.push(scanner::http::Warning {
+                                                    level: "critical".to_string(),
+                                                    message: format!("Git metadata exposed at {}", pc.path),
+                                                    confidence: 0.95,
+                                                });
+                                            }
+                                            // 혹시 다른 로직에서 git_exposed가 들어올 수 있다면 낮춰서 처리
                                             "git_exposed" => {
-                                                if is_catchall {
-                                                    warnings_out.push(scanner::http::Warning {
-                                                        level: "warning".to_string(),
-                                                        message: format!("Possible git metadata exposure at {} (catch-all detected, confirm manually)", pc.path),
-                                                        confidence: 0.5,
-                                                    });
-                                                } else {
-                                                    warnings_out.push(scanner::http::Warning {
-                                                        level: "critical".to_string(),
-                                                        message: format!("Git metadata exposed at {}", pc.path),
-                                                        confidence: 0.95,
-                                                    });
-                                                }
+                                                warnings_out.push(scanner::http::Warning {
+                                                    level: "warning".to_string(),
+                                                    message: format!("Possible git metadata exposure at {} (needs manual verify)", pc.path),
+                                                    confidence: 0.5,
+                                                });
                                             }
                                             "env_exposed" => {
                                                 if is_catchall {
@@ -546,16 +660,32 @@ async fn main() {
                 println!("{:>5}/tcp\t{}", port, if *open { "open" } else { "closed" });
             }
 
-            records.push(ScanRecord {
-                host: host_ip.clone(),
-                port: *port,
-                open: *open,
-                service: service_hint,
-                title,
-                warnings: warnings_out,
-                paths: paths_out,
-            });
+            if service_hint.is_none() && !proto_hits.is_empty() {
+                if let Some(first) = proto_hits.first() {
+                    service_hint = Some(first.name.clone()); // "postgres", "redis", "memcached" 등
+                }
+            }
+            
+            if *open {
+                records.push(ScanRecord {
+                    host: host_ip.clone(),
+                    port: *port,
+                    open: true, // 열린 포트만 push 중이라면 true 고정
+                    service: service_hint,
+                    title,
+                    warnings: warnings_out,
+                    paths: paths_out,
+                    banner: banner_opt,
+                    banner_sha1: banner_sha1_opt,
+                    tls: tls_info_opt,
+                    proto_hits, 
+                });
+            }
         }
+
+        records.retain(|r| r.open);
+        
+        
 
         // (4) 요약 집계(호스트 단위)
         let total_ports_scanned = sorted.len();
@@ -624,9 +754,9 @@ async fn main() {
         println!("====================\n");
 
         // (6) 저장 — 다중 타깃일 때는 파일명에 IP suffix 자동 부여
-        if let Some(base) = &cli.save {
+       if let Some(base) = &cli.save {
+            // 확장자 앞에 -<ip> 삽입 (다중 타깃인 경우)
             let out = if resolved.len() > 1 {
-                // 확장자 앞에 -<ip> 삽입
                 match base.rsplit_once('.') {
                     Some((stem, ext)) => format!("{}-{}.{}", stem, host_ip.replace(':', "_"), ext),
                     None => format!("{}-{}", base, host_ip.replace(':', "_")),
@@ -634,8 +764,12 @@ async fn main() {
             } else {
                 base.clone()
             };
-            if let Err(e) = save_results(&out, &summary, &records) {
-                eprintln!("저장 실패: {} -> {}", out, e);
+
+            // 이미 open 인 것만 push 하고 있으니 사실상 그대로 records.clone() 과 동일
+            let records_for_export: Vec<ScanRecord> = records.clone();
+
+            if let Err(e) = save_results(&out, &summary, &records_for_export) {
+                eprintln!("저장 실패: {}", e);
             } else {
                 println!("저장 완료: {}", out);
             }

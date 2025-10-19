@@ -1,0 +1,93 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--protected-mode", "no"]
+    ports: ["6379:6379"]
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+    ports: ["3306:3306"]
+
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_PASSWORD: "postgres"
+    ports: ["5432:5432"]
+
+  memcached:
+    image: memcached:1.6-alpine
+    command: ["-m", "64", "-vv"]
+    ports: ["11211:11211"]
+
+  mailhog:
+    image: mailhog/mailhog
+    ports:
+      - "1025:1025"   # SMTP 테스트 (TLS 없음)
+      - "8025:8025"   # 웹 UI
+
+  xrdp:
+    image: danchitnis/xrdp:ubuntu-xfce
+    environment:
+      - USER=demo
+      - PASSWORD=demo
+    ports:
+      - "3389:3389"
+
+  tls-nginx:
+    image: nginx:alpine
+    volumes:
+      - ./tls/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./tls/certs:/etc/nginx/certs:ro
+    ports:
+      - "443:443"
+      - "8443:8443"
+
+  # ────────────────────────────── 추가: SSH ──────────────────────────────
+  sshd:
+    image: lscr.io/linuxserver/openssh-server:latest
+    container_name: sshd
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Seoul
+      - PASSWORD_ACCESS=true
+      - USER_NAME=tester
+      - USER_PASSWORD=tester1234
+    # 이 이미지는 컨테이너 내부 SSH 포트가 2222입니다.
+    ports:
+      - "2222:2222"
+    restart: unless-stopped
+
+  # ────────────────────────────── 추가: FTP ──────────────────────────────
+  ftp:
+    image: fauria/vsftpd
+    container_name: ftp
+    environment:
+      - FTP_USER=tester
+      - FTP_PASS=tester1234
+      - PASV_ADDRESS=127.0.0.1
+      - PASV_MIN_PORT=30000
+      - PASV_MAX_PORT=30009
+      - LOG_STDOUT=YES
+      # FTPS(Explicit TLS) 테스트 원하면 아래 두 줄 주석 해제
+      # - SSL_ENABLE=YES
+      # - FORCE_LOCAL_LOGINS_SSL=NO
+    ports:
+      - "2121:21"                       # 제어 채널
+      - "30000-30009:30000-30009"       # PASV 데이터 채널
+    restart: unless-stopped
+
+  # ───────────────────────────── 추가: SMTP(STARTTLS) ────────────────────
+  smtp-starttls:
+    image: boky/postfix
+    container_name: smtp-starttls
+    environment:
+      - ALLOW_EMPTY_SENDER=true
+      - MYNETWORKS=0.0.0.0/0
+      - RELAYHOST=
+      - SSL_TYPE=opportunistic       # 가능하면 STARTTLS 광고
+    ports:
+      - "2525:25"                    # 호스트 2525 → 컨테이너 25
+    restart: unless-stopped

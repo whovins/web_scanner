@@ -1,13 +1,16 @@
 // src/scanner/vuln_db.rs
+
 use anyhow::{Result, Context};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fs;
 
+use crate::scanner::http::Warning;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VulnRule {
     pub pattern: String,     // regex string
-    pub field: String,       // "service" | "title" | "header" (for future)
+    pub field: String,       // "service" | "title" | "header"
     pub level: String,       // "info"|"warning"|"critical"
     pub message: String,
     pub confidence: f32,
@@ -22,7 +25,6 @@ pub fn load_rules_from_file(path: &str) -> Result<Vec<VulnRule>> {
 }
 
 pub fn default_rules() -> Vec<VulnRule> {
-    // a small helpful default set
     vec![
         VulnRule {
             pattern: r"(?i)apache/2\.4\.7".to_string(),
@@ -48,7 +50,6 @@ pub fn default_rules() -> Vec<VulnRule> {
             confidence: 0.95,
             tags: vec!["php".to_string()],
         },
-        // detect Juice Shop by title (useful for tests)
         VulnRule {
             pattern: r"(?i)juice shop".to_string(),
             field: "title".to_string(),
@@ -60,16 +61,20 @@ pub fn default_rules() -> Vec<VulnRule> {
     ]
 }
 
-pub fn match_vulns(field_value: Option<&str>, rules: &Vec<VulnRule>, field_name: &str) -> Vec<crate::scanner::http::Warning> {
+
+pub fn match_vulns(target: Option<&str>, rules: &[VulnRule], field: &str) -> Vec<Warning> {
     let mut out = Vec::new();
-    if field_value.is_none() { return out; }
-    let val = field_value.unwrap();
-    for r in rules.iter().filter(|r| r.field.eq_ignore_ascii_case(field_name)) {
+    let val = match target {
+        Some(v) if !v.is_empty() => v,
+        _ => return out,
+    };
+
+    for r in rules.iter().filter(|r| r.field.eq_ignore_ascii_case(field)) {
         if let Ok(re) = Regex::new(&r.pattern) {
             if re.is_match(val) {
-                out.push(crate::scanner::http::Warning {
+                out.push(Warning {
                     level: r.level.clone(),
-                    message: format!("{} (matched rule: {})", r.message, r.pattern),
+                    message: format!("{} (rule: {})", r.message, r.pattern),
                     confidence: r.confidence,
                 });
             }

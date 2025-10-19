@@ -6,3 +6,6 @@ pub mod services;
 pub mod vuln_db;
 pub mod targets;     
 pub mod rate;
+pub mod banner;
+pub mod tls;
+pub mod proto;
